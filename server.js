@@ -1,39 +1,45 @@
+require('dotenv').config();
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const cors = require('cors');
 
 const app = express();
 
-// --- SECURITY: CORS CONFIG ---
-// When you deploy to Vercel, replace '*' with your actual Vercel URL
+// --- RENDER & VERCEL INTEGRATION: CORS ---
 app.use(cors({
-    origin: '*', 
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type']
+    // Replace '*' with your actual Vercel URL for maximum security
+    origin: ['https://questarchivetest.vercel.app', 'http://localhost:3000'], 
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'ngrok-skip-browser-warning'],
+    credentials: true
 }));
 
 app.use(express.json());
 
-// --- SECURE CONFIGURATION ---
-// These pull from your System Environment Variables (Secrets)
+// --- DATABASE CONNECTION ---
 const SB_URL = process.env.SUPABASE_URL;
 const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// Safety check to ensure the server doesn't start without keys
 if (!SB_URL || !SB_SERVICE_KEY) {
-    console.error("❌ CRITICAL ERROR: Supabase Environment Variables are missing!");
+    console.error("❌ ERROR: Missing Supabase Environment Variables on Render!");
     process.exit(1);
 }
 
 const supabase = createClient(SB_URL, SB_SERVICE_KEY);
 
+// --- ROUTES ---
+
+// 1. Health Check (Required for Render to stay "Live")
+app.get('/', (req, res) => {
+    res.status(200).send("Gateway Operational: System Online");
+});
+
+// 2. The Verification Logic
 app.post('/verify', async (req, res) => {
-    console.log(`[${new Date().toISOString()}] Inbound Verification Request`);
-    
     try {
         const { hardware_id, details } = req.body;
         
-        // IP Detection (Cloudflare/Proxy compatible)
+        // Render/Cloudflare IP Detection
         let detected_ip = req.headers['cf-connecting-ip'] || 
                           req.headers['x-forwarded-for'] || 
                           req.socket.remoteAddress;
@@ -43,7 +49,9 @@ app.post('/verify', async (req, res) => {
         }
         detected_ip = detected_ip.replace('::ffff:', '');
 
-        // Supabase RPC Handshake
+        console.log(`[AUTH ATTEMPT] IP: ${detected_ip} | HWID: ${hardware_id.slice(0,8)}`);
+
+        // Supabase RPC Call
         const { data, error } = await supabase.rpc('handle_download_attempt', {
             u_cpu: parseInt(details.cpu) || 0,
             u_fingerprint: hardware_id,
@@ -54,7 +62,10 @@ app.post('/verify', async (req, res) => {
             u_ua: details.ua || "Unknown"
         });
 
-        if (error) throw error;
+        if (error) {
+            console.error("Supabase Error:", error.message);
+            throw error;
+        }
 
         if (data.status === 'allowed') {
             res.json({ 
@@ -66,15 +77,14 @@ app.post('/verify', async (req, res) => {
             res.status(429).json(data);
         }
     } catch (err) {
-        console.error("Gateway Error:", err.message);
-        res.status(500).json({ status: 'error', message: "Internal Security Error" });
+        console.error("Server Error:", err.message);
+        res.status(500).json({ status: 'error', message: "Internal Verification Error" });
     }
 });
 
-// Root check for health monitoring
-app.get('/', (req, res) => res.send("Gateway Operational"));
-
+// --- RENDER PORT BINDING ---
+// Render assigns a random port; process.env.PORT catches it automatically.
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Secure Gateway online on port ${PORT}`);
+    console.log(`🚀 Gateway deployed successfully on port ${PORT}`);
 });
