@@ -5,12 +5,11 @@ const cors = require('cors');
 
 const app = express();
 
-// --- RENDER & VERCEL INTEGRATION: CORS ---
+// --- SECURE CORS CONFIG ---
 app.use(cors({
-    // Replace '*' with your actual Vercel URL for maximum security
-    origin: ['https://questarchivetest.vercel.app', 'http://localhost:3000'], 
+    origin: 'https://questarchivetest.vercel.app', // Your Vercel Domain
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'ngrok-skip-browser-warning'],
+    allowedHeaders: ['Content-Type'], // Removed ngrok headers
     credentials: true
 }));
 
@@ -20,36 +19,34 @@ app.use(express.json());
 const SB_URL = process.env.SUPABASE_URL;
 const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// Fail-safe: Render will log this if variables are missing
 if (!SB_URL || !SB_SERVICE_KEY) {
-    console.error("❌ ERROR: Missing Supabase Environment Variables on Render!");
-    process.exit(1);
+    console.error("❌ CRITICAL: Environment Variables SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY are missing!");
+    process.exit(1); 
 }
 
 const supabase = createClient(SB_URL, SB_SERVICE_KEY);
 
 // --- ROUTES ---
 
-// 1. Health Check (Required for Render to stay "Live")
+// Health Check for Render
 app.get('/', (req, res) => {
-    res.status(200).send("Gateway Operational: System Online");
+    res.status(200).send("Gateway Operational");
 });
 
-// 2. The Verification Logic
+// Main Verification Route
 app.post('/verify', async (req, res) => {
     try {
         const { hardware_id, details } = req.body;
         
-        // Render/Cloudflare IP Detection
-        let detected_ip = req.headers['cf-connecting-ip'] || 
-                          req.headers['x-forwarded-for'] || 
-                          req.socket.remoteAddress;
-
-        if (detected_ip && detected_ip.includes(',')) {
+        // Detect Global Public IP
+        let detected_ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        if (detected_ip.includes(',')) {
             detected_ip = detected_ip.split(',')[0].trim();
         }
         detected_ip = detected_ip.replace('::ffff:', '');
 
-        console.log(`[AUTH ATTEMPT] IP: ${detected_ip} | HWID: ${hardware_id.slice(0,8)}`);
+        console.log(`[VERIFY] HWID: ${hardware_id.slice(0,8)} | IP: ${detected_ip}`);
 
         // Supabase RPC Call
         const { data, error } = await supabase.rpc('handle_download_attempt', {
@@ -62,10 +59,7 @@ app.post('/verify', async (req, res) => {
             u_ua: details.ua || "Unknown"
         });
 
-        if (error) {
-            console.error("Supabase Error:", error.message);
-            throw error;
-        }
+        if (error) throw error;
 
         if (data.status === 'allowed') {
             res.json({ 
@@ -74,17 +68,21 @@ app.post('/verify', async (req, res) => {
                 download_url: process.env.FILE_DOWNLOAD_URL || 'https://link.testfile.org/500MB' 
             });
         } else {
-            res.status(429).json(data);
+            res.status(429).json({
+                status: 'denied',
+                reason: data.reason,
+                remaining: 0
+            });
         }
+
     } catch (err) {
-        console.error("Server Error:", err.message);
-        res.status(500).json({ status: 'error', message: "Internal Verification Error" });
+        console.error("Internal Error:", err.message);
+        res.status(500).json({ status: 'error', message: "Internal Gateway Error" });
     }
 });
 
-// --- RENDER PORT BINDING ---
-// Render assigns a random port; process.env.PORT catches it automatically.
+// Start Server on Render's Port
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Gateway deployed successfully on port ${PORT}`);
+    console.log(`🚀 Gateway Live on Port ${PORT}`);
 });
